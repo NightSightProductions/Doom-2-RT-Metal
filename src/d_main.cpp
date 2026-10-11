@@ -1953,11 +1953,25 @@ static void GetCmdLineFiles(std::vector<std::string>& wadfiles)
 	}
 
 #if HAVE_RT
-	if (!DirEntryExists("rt/wad"))
+#ifdef _WIN32
+	const FString rtwad = "rt/wad";
+#else
+	// a macOS app's current directory is not its folder
+	const FString rtwad = progdir + "rt/wad";
+#endif
+	if (!DirEntryExists(rtwad.GetChars()))
 	{
 		I_FatalError("Can't find rt/wad directory");
 	}
-	D_AddWildFile(wadfiles, "rt/wad", nullptr /* ignored */, GameConfig);
+	D_AddWildFile(wadfiles, rtwad.GetChars(), nullptr /* ignored */, GameConfig);
+#ifdef __APPLE__
+	// overrides for rt/wad: the RT menu for the Metal backend
+	const FString rtmetal = progdir + "rt_metal.pk3";
+	if (FileExists(rtmetal.GetChars()))
+	{
+		D_AddFile(wadfiles, rtmetal.GetChars(), true, -1, GameConfig);
+	}
+#endif
 #endif
 }
 

@@ -58,9 +58,18 @@
 
 #ifdef HAVE_VULKAN
 #include "vulkan/system/vk_renderdevice.h"
-#endif
 
 bool I_CreateVulkanSurface(VkInstance instance, VkSurfaceKHR *surface);
+#endif
+
+#if HAVE_RT
+#import <QuartzCore/CAMetalLayer.h>
+
+#include <algorithm>
+#include <vector>
+#include "cmdlib.h"
+#include "rt/rt_platform.h"
+#endif
 
 extern bool ToggleFullscreen;
 
@@ -100,6 +109,75 @@ EXTERN_CVAR(Bool, vid_hidpi)
 EXTERN_CVAR(Int,  vid_defwidth)
 EXTERN_CVAR(Int,  vid_defheight)
 EXTERN_CVAR(Bool, vk_debug)
+#if HAVE_RT
+EXTERN_CVAR(Bool, vid_metalhud)
+void I_RT_ApplyMetalHUDOnCreate(CALayer* layer);
+#endif
+
+#if HAVE_RT
+EXTERN_CVAR(Int, vid_rt_fullscreenwidth)
+EXTERN_CVAR(Int, vid_rt_fullscreenheight)
+
+// The view with RTGL1's CAMetalLayer, inside the window's content view (RTContainerView)
+static NSView* s_rtView = nil;
+
+NSView* I_RT_RenderView(const NSWindow* window)
+{
+	return s_rtView != nil && s_rtView.window == window ? s_rtView : [window contentView];
+}
+
+// Fullscreen: the chosen resolution (vid_rt_fullscreenwidth x vid_rt_fullscreenheight) is scaled to the screen,
+// keeping its aspect ratio (black bars, if it's not the screen's), as Quake II RTX's display modes.
+// Otherwise, the view fills the window, in the display's pixels.
+static void I_RT_LayoutRenderView(NSWindow* window, bool fullscreen)
+{
+	if (s_rtView == nil || s_rtView.window != window)
+	{
+		return;
+	}
+	const NSRect  bounds  = [window contentView].bounds;
+	const CGFloat backing = window.screen != nil ? window.screen.backingScaleFactor : window.backingScaleFactor;
+
+	NSRect  frame = bounds;
+	CGFloat scale = backing;
+
+	if (fullscreen && vid_rt_fullscreenwidth > 0 && bounds.size.width > 0 && bounds.size.height > 0)
+	{
+		const CGFloat w = CGFloat(vid_rt_fullscreenwidth);
+		const CGFloat h = vid_rt_fullscreenheight > 0
+			? CGFloat(vid_rt_fullscreenheight)
+			: w * bounds.size.height / bounds.size.width;
+
+		// aspect-fit, centered
+		const CGFloat fit = std::min(bounds.size.width / w, bounds.size.height / h);
+		frame.size   = NSMakeSize(std::round(w * fit), std::round(h * fit));
+		frame.origin = NSMakePoint(std::round((bounds.size.width - frame.size.width) / 2),
+		                           std::round((bounds.size.height - frame.size.height) / 2));
+
+		scale = std::clamp(w / frame.size.width, CGFloat(0.25), backing);
+	}
+
+	if (!NSEqualRects(s_rtView.frame, frame))
+	{
+		s_rtView.frame = frame;
+	}
+	if (s_rtView.layer.contentsScale != scale)
+	{
+		s_rtView.layer.contentsScale = scale;
+	}
+}
+#endif
+
+// Whether window sizes and the drawable are in the display's backing pixels.
+// The RT renderer always uses pixels (as on other platforms): resolutions don't depend on vid_hidpi.
+static bool I_UseBackingPixels()
+{
+#if HAVE_RT
+	return true;
+#else
+	return vid_hidpi;
+#endif
+}
 
 CVAR(Bool, mvk_debug, false, 0)
 CVAR(Bool, vid_nativefullscreen, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -272,6 +350,27 @@ namespace
 @end
 
 
+#if HAVE_RT
+// The window's content view: keeps the render view laid out, see I_RT_LayoutRenderView
+@interface RTContainerView : NSView
+@end
+
+@implementation RTContainerView
+
+- (void)resizeSubviewsWithOldSize:(NSSize)oldSize
+{
+	I_RT_LayoutRenderView(self.window, vid_fullscreen);
+}
+
+-(BOOL) isOpaque
+{
+	return YES;
+}
+
+@end
+#endif
+
+
 // ---------------------------------------------------------------------------
 
 
@@ -378,7 +477,9 @@ public:
 
 	~CocoaVideo()
 	{
+#ifdef HAVE_VULKAN
 		m_vulkanSurface.reset();
+#endif
 		ms_window = nil;
 	}
 
@@ -390,6 +491,25 @@ public:
 		const NSRect contentRect = [ms_window contentRectForFrameRect:[ms_window frame]];
 		SystemBaseFrameBuffer *fb = nullptr;
 
+#if HAVE_RT
+		// RTGL1 renders with Metal: VulkanCocoaView is backed by a CAMetalLayer,
+		// RTGL1 sets its device and pixel format, and follows its size
+		NSView* container = [[RTContainerView alloc] initWithFrame:contentRect];
+		container.wantsLayer = YES;
+		container.layer.backgroundColor = NSColor.blackColor.CGColor;
+		[ms_window setContentView:container];
+
+		NSView* rtView = [[VulkanCocoaView alloc] initWithFrame:container.bounds];
+		rtView.wantsLayer = YES;
+		rtView.layer.backgroundColor = NSColor.blackColor.CGColor;
+		[container addSubview:rtView];
+		s_rtView = rtView;
+		I_RT_LayoutRenderView(ms_window, vid_fullscreen);
+
+		fb = static_cast<SystemBaseFrameBuffer*>(RT_CreateMetalFrameBuffer((__bridge void*)rtView.layer, vid_fullscreen));
+
+		I_RT_ApplyMetalHUDOnCreate(rtView.layer);
+#else
 #ifdef HAVE_VULKAN
 		if (ms_isVulkanEnabled)
 		{
@@ -468,6 +588,7 @@ public:
 #endif
 				fb = new OpenGLRenderer::OpenGLFrameBuffer(0, vid_fullscreen);
 		}
+#endif // HAVE_RT
 
 		fb->SetWindow(ms_window);
 		fb->SetMode(vid_fullscreen, vid_hidpi);
@@ -531,6 +652,11 @@ SystemBaseFrameBuffer::~SystemBaseFrameBuffer()
 	assert(frameBuffer == this);
 	frameBuffer = nullptr;
 
+#if HAVE_RT
+	// the same as Win32RTVideo::Shutdown in Windows' ~SystemBaseFrameBuffer
+	RT_DestroyInstance();
+#endif
+
 	NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
 	[nc removeObserver:m_window
 				  name:NSWindowDidMoveNotification
@@ -563,6 +689,17 @@ void SystemBaseFrameBuffer::SetWindowSize(int width, int height)
 		vid_fullscreen = false;
 		SetMode(false, m_hiDPI);
 	}
+
+#if HAVE_RT
+	// The resolution menu specifies pixels, as on other platforms:
+	// with HiDPI, a window of width x height points would be rendered at backingScaleFactor times that
+	if (I_UseBackingPixels() && m_window.screen != nil)
+	{
+		const CGFloat scale = m_window.screen.backingScaleFactor;
+		width  = int(width / scale);
+		height = int(height / scale);
+	}
+#endif
 
 	win_w = width;
 	win_h = height + GetTitleBarHeight();
@@ -652,7 +789,11 @@ void SystemBaseFrameBuffer::SetMode(const bool fullscreen, const bool hiDPI)
     {
 		assert(m_window.screen != nil);
 		assert([m_window.contentView layer] != nil);
+#if HAVE_RT
+		I_RT_LayoutRenderView(m_window, fullscreen);
+#else
 		[m_window.contentView layer].contentsScale = hiDPI ? m_window.screen.backingScaleFactor : 1.0;
+#endif
 	}
 
 	if (vid_nativefullscreen && fullscreen != m_fullscreen)
@@ -693,7 +834,11 @@ void SystemBaseFrameBuffer::SetCursor(NSCursor* cursor)
 	if (frameBuffer != nullptr)
 	{
 		NSWindow* const window = frameBuffer->m_window;
+#if HAVE_RT
+		id view = I_RT_RenderView(window);
+#else
 		id view = [window contentView];
+#endif
 
 		[view setCursor:cursor];
 		[window invalidateCursorRectsForView:view];
@@ -809,12 +954,164 @@ void I_InitGraphics()
 }
 
 
+#if HAVE_RT
+
+// rt_platform.h
+
+void I_RT_MessageBox(const char* title, const char* msg)
+{
+	NSAlert* alert = [[NSAlert alloc] init];
+	alert.alertStyle = NSAlertStyleWarning;
+	alert.messageText = [NSString stringWithUTF8String:title];
+	alert.informativeText = [NSString stringWithUTF8String:msg];
+	[alert addButtonWithTitle:@"OK"];
+	[alert runModal];
+	[alert release];
+}
+
+bool I_RT_AskYesNo(const char* title, const char* msg)
+{
+	NSAlert* alert = [[NSAlert alloc] init];
+	alert.alertStyle = NSAlertStyleWarning;
+	alert.messageText = [NSString stringWithUTF8String:title];
+	alert.informativeText = [NSString stringWithUTF8String:msg];
+	[alert addButtonWithTitle:@"Yes"];
+	[alert addButtonWithTitle:@"No"];
+	const NSModalResponse r = [alert runModal];
+	[alert release];
+	return r == NSAlertFirstButtonReturn;
+}
+
+int I_RT_AskAbortRetryIgnore(const char* title, const char* msg)
+{
+	NSAlert* alert = [[NSAlert alloc] init];
+	alert.alertStyle = NSAlertStyleCritical;
+	alert.messageText = [NSString stringWithUTF8String:title];
+	alert.informativeText = [NSString stringWithUTF8String:msg];
+	[alert addButtonWithTitle:@"Retry"];
+	[alert addButtonWithTitle:@"Ignore"];
+	[alert addButtonWithTitle:@"Abort"];
+	const NSModalResponse r = [alert runModal];
+	[alert release];
+	return r == NSAlertFirstButtonReturn ? 1 : r == NSAlertSecondButtonReturn ? 2 : 0;
+}
+
+void I_RT_OpenUrl(const char* url)
+{
+	NSURL* u = [NSURL URLWithString:[NSString stringWithUTF8String:url]];
+	if (u != nil)
+	{
+		[[NSWorkspace sharedWorkspace] openURL:u];
+	}
+}
+
+bool I_RT_IsWindowMinimized()
+{
+	NSWindow* const window = CocoaVideo::GetWindow();
+	return window != nil && [window isMiniaturized];
+}
+
+void I_RT_GetScreenSize(int* width, int* height)
+{
+	NSScreen* const screen = [NSScreen mainScreen];
+	const CGFloat scale = I_UseBackingPixels() ? screen.backingScaleFactor : 1.0;
+	*width = int(screen.frame.size.width * scale);
+	*height = int(screen.frame.size.height * scale);
+}
+
+// The display's modes in pixels, as macOS offers them in Displays settings (with the scaled ones)
+void I_RT_GetDisplayModes(std::vector<std::pair<int, int>>& modes)
+{
+	const CGDirectDisplayID display = CGMainDisplayID();
+
+	NSDictionary* options = @{ (__bridge NSString*)kCGDisplayShowDuplicateLowResolutionModes : @YES };
+	CFArrayRef all = CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef)options);
+	if (all == nullptr)
+	{
+		return;
+	}
+	for (CFIndex i = 0; i < CFArrayGetCount(all); i++)
+	{
+		auto mode = static_cast<CGDisplayModeRef>(const_cast<void*>(CFArrayGetValueAtIndex(all, i)));
+		if (!CGDisplayModeIsUsableForDesktopGUI(mode))
+		{
+			continue;
+		}
+		// pixel sizes, and the sizes in points: the scaled ones (lower) are rendered 1:1 too
+		const std::pair<int, int> sizes[] = {
+			{ int(CGDisplayModeGetPixelWidth(mode)), int(CGDisplayModeGetPixelHeight(mode)) },
+			{ int(CGDisplayModeGetWidth(mode)), int(CGDisplayModeGetHeight(mode)) },
+		};
+		for (const auto& wh : sizes)
+		{
+			if (std::find(modes.begin(), modes.end(), wh) == modes.end())
+			{
+				modes.push_back(wh);
+			}
+		}
+	}
+	CFRelease(all);
+}
+
+const char* I_RT_GetProgramFolder()
+{
+	return progdir.GetChars();
+}
+
+#endif // HAVE_RT
+
+
 // ---------------------------------------------------------------------------
 
 CUSTOM_CVAR(Bool, vid_hidpi, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
 	SystemBaseFrameBuffer::UseHiDPI(self);
 }
+
+#if HAVE_RT
+// The Metal Performance HUD (the same as MTL_HUD_ENABLED=1, which works only if the game
+// is launched from a terminal: the app launched from Finder doesn't get environment variables).
+// By the property's name: gzdoom doesn't link QuartzCore
+static void I_RT_SetMetalHUD(CALayer* layer, bool enable)
+{
+	if (layer && [layer respondsToSelector:NSSelectorFromString(@"setDeveloperHUDProperties:")])
+	{
+		[layer setValue:(enable ? @{ @"mode" : @"default", @"logging" : @"default" } : nil)
+				 forKey:@"developerHUDProperties"];
+	}
+}
+
+void I_RT_ApplyMetalHUDOnCreate(CALayer* layer)
+{
+	I_RT_SetMetalHUD(layer, vid_metalhud);
+}
+
+// The resolution in fullscreen, scaled to the screen; 0 for the native resolution
+CUSTOM_CVAR(Int, vid_rt_fullscreenwidth, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	if (CocoaWindow* window = CocoaVideo::GetWindow())
+	{
+		I_RT_LayoutRenderView(window, vid_fullscreen);
+	}
+}
+
+// With vid_rt_fullscreenwidth, its aspect ratio; 0 for the screen's
+CUSTOM_CVAR(Int, vid_rt_fullscreenheight, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	if (CocoaWindow* window = CocoaVideo::GetWindow())
+	{
+		I_RT_LayoutRenderView(window, vid_fullscreen);
+	}
+}
+
+CUSTOM_CVAR(Bool, vid_metalhud, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	if (CocoaWindow* window = CocoaVideo::GetWindow())
+	{
+		I_RT_SetMetalHUD(I_RT_RenderView(window).layer, self);
+	}
+}
+#endif
 
 
 // ---------------------------------------------------------------------------
@@ -880,10 +1177,22 @@ bool I_SetCursor(FGameTexture *cursorpic)
 
 NSSize I_GetContentViewSize(const NSWindow* const window)
 {
+#if HAVE_RT
+	const NSView* const view = I_RT_RenderView(window);
+#else
 	const NSView* const view = [window contentView];
+#endif
 	const NSSize frameSize   = [view frame].size;
 
-	return (vid_hidpi)
+#if HAVE_RT
+	// the drawable's size
+	if (view.layer != nil)
+	{
+		const CGFloat scale = view.layer.contentsScale;
+		return NSMakeSize(frameSize.width * scale, frameSize.height * scale);
+	}
+#endif
+	return I_UseBackingPixels()
 		? [view convertSizeToBacking:frameSize]
 		: frameSize;
 }

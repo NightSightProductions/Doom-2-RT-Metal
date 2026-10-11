@@ -35,6 +35,13 @@
 */ 
 
 
+#include <algorithm>
+#include <vector>
+
+#if HAVE_RT
+#include "rt/rt_platform.h"
+#endif
+
 #include "texturemanager.h"
 #include "filesystem.h"
 #include "c_console.h"
@@ -1411,6 +1418,11 @@ DEFINE_ACTION_FUNCTION_NATIVE(_Translation, MakeID, MakeTransID)
 
 EXTERN_CVAR( Int, menu_resolution_custom_width )
 EXTERN_CVAR( Int, menu_resolution_custom_height )
+EXTERN_CVAR( Bool, vid_fullscreen )
+#ifdef __APPLE__
+EXTERN_CVAR( Int, vid_rt_fullscreenwidth )
+EXTERN_CVAR( Int, vid_rt_fullscreenheight )
+#endif
 
 static std::pair< int, int > GetFullscreen();
 
@@ -1423,7 +1435,24 @@ DEFINE_ACTION_FUNCTION(DListMenuItemTextItem_RT, ApplyResolution)
     PARAM_BOOL(fullscreen);
 
 	const auto [width_fs, height_fs] = GetFullscreen();
-	fullscreen = fullscreen || (width == width_fs && height == height_fs);
+	const bool isNative = ( width == width_fs && height == height_fs );
+
+#ifdef __APPLE__
+	// in fullscreen, stay fullscreen: the chosen resolution is scaled to the screen (as Quake II RTX's modes)
+	if( vid_fullscreen && !fullscreen )
+	{
+		vid_rt_fullscreenwidth  = isNative ? 0 : width;
+		vid_rt_fullscreenheight = isNative ? 0 : height;
+		fullscreen = true;
+	}
+	else if( isNative )
+	{
+		vid_rt_fullscreenwidth  = 0;
+		vid_rt_fullscreenheight = 0;
+	}
+#endif
+
+	fullscreen = fullscreen || isNative;
 
     if (fullscreen)
     {
@@ -1449,6 +1478,38 @@ DEFINE_ACTION_FUNCTION(DListMenuItemTextItem_RT, ValidateResolutions)
     assert(arrWidthHeight->Size() % 2 == 0);
 
     const auto fullscreen = GetFullscreen();
+
+#ifdef __APPLE__
+    // DOOM 2 RT's list is for PC monitors: add the Mac display's own modes
+    // (as in Displays settings, in pixels), sorted by area
+    {
+        std::vector< std::pair< int, int > > all;
+        for( uint32_t i = 0; i < arrWidthHeight->Size() / 2; i++ )
+        {
+            all.emplace_back( ( *arrWidthHeight )[ i * 2 + 0 ], ( *arrWidthHeight )[ i * 2 + 1 ] );
+        }
+        std::vector< std::pair< int, int > > mac;
+        I_RT_GetDisplayModes( mac );
+        for( const auto& m : mac )
+        {
+            if( std::ranges::find( all, m ) == all.end() )
+            {
+                all.push_back( m );
+            }
+        }
+        std::ranges::sort( all, []( const auto& a, const auto& b ) {
+            return a.first * a.second < b.first * b.second ||
+                   ( a.first * a.second == b.first * b.second && a.first < b.first );
+        } );
+
+        arrWidthHeight->Clear();
+        for( const auto& [ w, h ] : all )
+        {
+            arrWidthHeight->Push( w );
+            arrWidthHeight->Push( h );
+        }
+    }
+#endif
 
     TArray<int> validated;
     bool foundFullscreen = false;
@@ -1519,6 +1580,19 @@ DEFINE_ACTION_FUNCTION(DListMenuItemTextItem_RT, IsHDRAvailable)
 {
     ACTION_RETURN_BOOL(cvar::rt_hdr_available);
 }
+DEFINE_ACTION_FUNCTION(DListMenuItemTextItem_RT, IsAvailable_MetalFXDenoiser)
+{
+    ACTION_RETURN_BOOL(cvar::rt_available_metalfx_denoiser);
+}
+// RTGL1's Metal backend: the only presentation engine; FSR 2 / 3 are MetalFX upscaling / frame interpolation
+DEFINE_ACTION_FUNCTION(DListMenuItemTextItem_RT, IsMetal)
+{
+#ifdef __APPLE__
+    ACTION_RETURN_BOOL(true);
+#else
+    ACTION_RETURN_BOOL(false);
+#endif
+}
 DEFINE_ACTION_FUNCTION(DListMenuItemTextItem_RT, IsRtxRemix)
 {
     ACTION_RETURN_BOOL(bool(g_isremix));
@@ -1555,6 +1629,74 @@ static auto RT_GetDescription( std::string_view rtkey, bool forFirstStartMenu = 
         };
         return lines;
     }
+#ifdef __APPLE__
+    if( rtkey == "RTMNU_VSYNC" )
+    {
+        static const char* lines[] = {
+            "Vertical synchronization prevents tearing.",
+            "",
+            "On -- if the frame rate is lower than the display's,",
+            "frames alternate between 1 and 2 refreshes on screen,",
+            "which might look uneven.",
+            "",
+            "Half Rate -- each frame is on screen for 2 refreshes",
+            "(e.g. 30 FPS on a 60 Hz display): lower, but even frame times.",
+        };
+        return lines;
+    }
+    if( rtkey == "RTMNU_DXGI" )
+    {
+        static const char* lines[] = {
+            "Presentation engine to use to display the rendered image.",
+            "",
+            "On macOS, the frame is rendered and presented via Metal.",
+        };
+        return lines;
+    }
+    if( rtkey == "RTMNU_MODE" )
+    {
+        static const char* lines[] = {
+            "Technique to apply to upscale from",
+            "a render resolution to a window / display resolution.",
+            "",
+            "MetalFX -- Temporal upscaling.",
+            "Available on Apple silicon.",
+            "",
+            "Vintage techniques render at 90s displays' resolution.",
+        };
+        if( forFirstStartMenu )
+        {
+            // do not mention 'Vintage'
+            return std::span{ lines, std::size( lines ) - 2 };
+        }
+        return lines;
+    }
+    if( rtkey == "RTMNU_FRAMEGEN" )
+    {
+        static const char* lines[] = {
+            "Insert an interpolated frame in-between actual frames.",
+            "Because it's a virtual frame, expect a higher input latency.",
+            "Requires a stable \'actual\' frame rate, more than 60 FPS.",
+            "",
+            "MetalFX -- Frame Interpolation.",
+            "Requires MetalFX upscaling and macOS 26.",
+        };
+        return lines;
+    }
+    if( rtkey == "RTMNU_DENOISER" )
+    {
+        static const char* lines[] = {
+            "Technique to remove the noise of path tracing.",
+            "",
+            "Default -- the game's own denoiser.",
+            "",
+            "MetalFX -- MetalFX denoised upscaling.",
+            "Denoises and upscales in one pass.",
+            "Requires MetalFX upscaling and macOS 26.",
+        };
+        return lines;
+    }
+#endif
     if( rtkey == "RTMNU_DXGI" )
     {
         static const char* lines[] = {
@@ -1710,15 +1852,37 @@ static auto RT_GetErrorsFor( std::string_view rtkey ) -> std::vector< const char
         rtkey == "RTMNU_DXGI" ||         //
         rtkey == "RTMNU_HDR" )
     {
+#ifndef __APPLE__
         if( cvar::rt_failreason_dxgi )
         {
             return { cvar::rt_failreason_dxgi };
         }
+#endif
     }
     else if( rtkey == "RTMNU_MODE" ||   //
              rtkey == "RTMNU_PRESET" || //
-             rtkey == "RTMNU_FRAMEGEN" )
+             rtkey == "RTMNU_FRAMEGEN" || //
+             rtkey == "RTMNU_DENOISER" )
     {
+#ifdef __APPLE__
+        auto errors = std::vector< const char* >{};
+        if( cvar::rt_failreason_fsr2 )
+        {
+            errors.push_back( "MetalFX upscaling failed:" );
+            errors.push_back( cvar::rt_failreason_fsr2 );
+        }
+        else if( cvar::rt_failreason_fsr3fg && rtkey == "RTMNU_FRAMEGEN" )
+        {
+            errors.push_back( "MetalFX frame interpolation failed:" );
+            errors.push_back( cvar::rt_failreason_fsr3fg );
+        }
+        else if( !cvar::rt_available_metalfx_denoiser && rtkey == "RTMNU_DENOISER" )
+        {
+            errors.push_back( "MetalFX denoiser failed:" );
+            errors.push_back( "Requires macOS 26 and a supported GPU" );
+        }
+        return errors;
+#else
         auto errors = std::vector< const char* >{};
         if( cvar::rt_failreason_dlss2 || cvar::rt_failreason_dlss3fg )
         {
@@ -1740,6 +1904,7 @@ static auto RT_GetErrorsFor( std::string_view rtkey ) -> std::vector< const char
                                                        : cvar::rt_failreason_fsr3fg );
         }
         return errors;
+#endif
     }
     return {};
 }
@@ -1986,17 +2151,28 @@ DEFINE_ACTION_FUNCTION( DBlockingDescription_RT, RT_DrawDescriptions )
     return 0;
 }
 
-#define NOMINMAX
+#ifdef _WIN32
+    #define NOMINMAX
     #include "windows.h"
+#else
+// common/platform/posix/cocoa/i_video.mm
+void I_RT_GetScreenSize( int* width, int* height );
+#endif
 
 static std::pair< int, int > GetFullscreen()
 {
     // TODO: make a call to Screen
     // should be a monitor resolution
+#ifdef _WIN32
     return {
         GetSystemMetrics( SM_CXSCREEN ),
         GetSystemMetrics( SM_CYSCREEN ),
     };
+#else
+    int w = 0, h = 0;
+    I_RT_GetScreenSize( &w, &h );
+    return { w, h };
+#endif
 }
 
 #endif // HAVE_RT

@@ -308,8 +308,12 @@ if( MSVC )
 else()
 	set( REL_LINKER_FLAGS "" )
 	set( ALL_C_FLAGS "-ffp-contract=off" )
-	
-	set( ALL_C_FLAGS "${ALL_C_FLAGS} /DHAVE_RT=0" )
+
+	if ( HAVE_RT )
+		set( ALL_C_FLAGS "${ALL_C_FLAGS} -DHAVE_RT=1" )
+	else()
+		set( ALL_C_FLAGS "${ALL_C_FLAGS} -DHAVE_RT=0" )
+	endif()
 
 	if ( HAVE_VULKAN )
 		set( ALL_C_FLAGS "${ALL_C_FLAGS} -DHAVE_VULKAN" )
@@ -338,7 +342,13 @@ else()
 
 
 	if( APPLE )
-		set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13")
+		if( HAVE_RT )
+			# Metal 3 (bindless argument buffers, MTLResourceID) for RTGL1's Metal backend,
+			# 13.3 for std::format of floats
+			set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3")
+		else()
+			set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13")
+		endif()
 		if( CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
 			# If we're compiling with a custom GCC on the Mac (which we know since g++-4.2 doesn't support C++11) statically link libgcc.
 			set( ALL_C_FLAGS "-static-libgcc" )
@@ -444,6 +454,10 @@ add_subdirectory( wadsrc_bm )
 add_subdirectory( wadsrc_lights )
 add_subdirectory( wadsrc_extra )
 add_subdirectory( wadsrc_widepix )
+if( APPLE AND HAVE_RT )
+	# overrides for rt/wad, for RTGL1's Metal backend
+	add_subdirectory( wadsrc_rt_metal )
+endif()
 add_subdirectory( src )
 
 if( NOT CMAKE_CROSSCOMPILING )

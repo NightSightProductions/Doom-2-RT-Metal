@@ -1,7 +1,11 @@
 #include "rt_cvars.h"
 #include "rt_helpers.h"
 
-#include "i_mainwindow.h"
+#ifdef _WIN32
+    #include "i_mainwindow.h"
+#else
+    #include "rt_platform.h"
+#endif
 #include "i_time.h"
 #include "texturemanager.h"
 #include "v_draw.h"
@@ -243,7 +247,12 @@ namespace intro
     {
         g_rt_cutscenename = CutsceneGltfName;
         cvar::rt_classic  = 0; // cutscenes work on replacements, no classic mode available...
-        if( !IsIconic( mainwindow.GetHandle() ) )
+#ifdef _WIN32
+        const bool minimized = IsIconic( mainwindow.GetHandle() );
+#else
+        const bool minimized = I_RT_IsWindowMinimized();
+#endif
+        if( !minimized )
         {
             g_cstime_start   = RT_GetCurrentTime();
             g_cstime_paused  = {};
@@ -1309,9 +1318,14 @@ namespace firststart
             }
             if( cvar::rt_upscale_fsr2 > 0 && cvar::rt_available_fsr2 )
             {
+#ifdef __APPLE__
+                // RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2 is MetalFX on the Metal backend
+                return "METALFX";
+#else
                 return cvar::rt_framegen && cvar::rt_available_fsr3fg //
                            ? "FSR 3"
                            : "FSR 2";
+#endif
             }
             return "Custom";
         };

@@ -70,8 +70,10 @@ CVAR (String, snd_alresampler, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 #endif
 
 #ifdef __APPLE__
-// User's library (like OpenAL Soft installed manually or via Homebrew) has precedence
+// OpenAL Soft next to the executable (as a packaged app ships it), then the user's library
+// (like OpenAL Soft installed manually or via Homebrew), have precedence
 // over Apple's OpenAL framework which lacks several important features
+#define OPENALLIB0 NicePath("$PROGDIR/libopenal.1.dylib").GetChars()
 #define OPENALLIB1 "libopenal.1.dylib"
 #define OPENALLIB2 "OpenAL.framework/OpenAL"
 #else // !__APPLE__
@@ -92,7 +94,11 @@ bool IsOpenALPresent()
 	if (!done)
 	{
 		done = true;
+#ifdef __APPLE__
+		cached_result = OpenALModule.Load({OPENALLIB0, OPENALLIB1, OPENALLIB2});
+#else
 		cached_result = OpenALModule.Load({OPENALLIB1, OPENALLIB2});
+#endif
 	}
 	return cached_result;
 #endif
