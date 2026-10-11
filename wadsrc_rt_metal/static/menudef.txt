@@ -1,0 +1,58 @@
+// Loaded after rt/wad on macOS (RTGL1's Metal backend), replaces its "RT_OptionsMenu":
+// Present is Metal only, FSR is MetalFX, and there's a choice of denoiser
+// (zscript/engine/ui/menu/listmenuitems_rt.zs)
+
+LISTMENU "RT_OptionsMenu"
+{
+	StaticPatch -16, 10, "M_DISOPT"
+	Position 45, 30
+
+
+	Font "SmallFont"
+	Selector "M_RTSLCT", 0,0
+	Linespacing	10
+
+
+	TextItem_RT	"RTMNU_WINDOW_RESOL"
+										Linespacing	10
+	TextItem_RT	"RTMNU_DXGI"
+										Linespacing	10
+	TextItem_RT	"RTMNU_VSYNC"
+										Linespacing	14
+	TextItem_RT	"RTMNU_HDR"
+										Linespacing	10
+
+
+	// "Performance"
+	TextItem_RT	"RTMNU_MODE"
+										Linespacing	10
+	TextItem_RT	"RTMNU_PRESET"
+										Linespacing	10
+	TextItem_RT	"RTMNU_FRAMEGEN"
+										Linespacing	14
+	TextItem_RT	"RTMNU_DENOISER"
+										Linespacing	10
+
+	// "Visuals"
+	TextItem_RT	"RTMNU_CLASSIC"
+										Linespacing	10
+	TextItem_RT	"RTMNU_BLOOM"
+										Linespacing	14
+	TextItem_RT	"RTMNU_FLUID"
+										Linespacing	10
+
+	// "HUD"
+	TextItem_RT	"RTMNU_HUD_STYLE"
+										Linespacing	18
+	TextItem_RT	"RTMNU_HUD_SIZE"
+
+	TextItem_RT	"Other",				"OptionsMenu"
+}
+
+// Display Options -> Preferred API: the RT renderer always renders with RTGL1, on macOS with Metal
+OptionValue PreferBackend
+{
+	0, "Metal"
+	1, "Metal"
+	2, "Metal"
+}

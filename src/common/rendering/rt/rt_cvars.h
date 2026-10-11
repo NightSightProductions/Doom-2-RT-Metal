@@ -13,6 +13,7 @@ EXTERN_CVAR( Bool, rt_classic_mus )
 EXTERN_CVAR( Int, rt_upscale_dlss )
 EXTERN_CVAR( Int, rt_upscale_fsr2 )
 EXTERN_CVAR( Int, rt_framegen )
+EXTERN_CVAR( Int, rt_denoiser )
 
 EXTERN_CVAR( Bool, rt_vsync )
 EXTERN_CVAR( Bool, rt_hdr )
@@ -35,6 +36,7 @@ extern const char* rt_failreason_fsr3fg;
 extern const char* rt_failreason_dxgi;
 
 extern bool rt_hdr_available;
+extern bool rt_available_metalfx_denoiser;
 
 extern bool rt_firststart;
 

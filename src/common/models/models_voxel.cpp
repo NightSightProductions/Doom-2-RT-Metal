@@ -445,7 +445,12 @@ FVoxelModel::FVoxelModel(FVoxel *voxel, bool owned)
 #else
 	auto append = []<size_t N>(char(&str)[N], const char *toappend)
 	{
-		strncat_s(str, std::size(str), toappend, 9);
+		// portable strncat_s( str, std::size( str ), toappend, 9 )
+		const size_t len = strnlen( str, std::size( str ) );
+		if( len < std::size( str ) )
+		{
+			strncat( str, toappend, std::min( size_t( 9 ), std::size( str ) - len - 1 ) );
+		}
 		str[std::size(str) - 1] = '\0';
 	};
 	auto removelastchar = []<size_t N>(char(&str)[N])

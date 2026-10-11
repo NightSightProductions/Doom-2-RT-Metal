@@ -60,6 +60,10 @@ extern bool ToggleFullscreen;
 bool GUICapture;
 
 
+#if HAVE_RT
+NSView* I_RT_RenderView(const NSWindow* window);
+#endif
+
 namespace
 {
 
@@ -437,7 +441,12 @@ void ProcessKeyboardEventInMenu(NSEvent* theEvent)
 void NSEventToGameMousePosition(NSEvent* inEvent, event_t* outEvent)
 {
 	const NSWindow* window = [inEvent window];
+#if HAVE_RT
+	// the render view might be smaller than the window (fullscreen with black bars)
+	const NSView*     view = I_RT_RenderView(window);
+#else
 	const NSView*     view = [window contentView];
+#endif
 
 	const NSPoint screenPos = [NSEvent mouseLocation];
 	const NSRect screenRect = NSMakeRect(screenPos.x, screenPos.y, 0, 0);
@@ -455,7 +464,7 @@ void NSEventToGameMousePosition(NSEvent* inEvent, event_t* outEvent)
 	}
 	else
 	{
-		viewPos  = windowRect.origin;
+		viewPos  = [view convertPoint:windowRect.origin fromView:nil];
 		viewSize = view.frame.size;
 		scale    = view.layer.contentsScale;
 	}
